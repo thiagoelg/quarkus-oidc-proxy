@@ -82,4 +82,11 @@ public interface OidcProxyConfig {
      * with either this property or the OIDC tenant configuration, in order to support public clients.
      */
     Optional<String> externalClientSecret();
+
+    /**
+     * Authentication method used by the external client. If this property is not set then the authentication
+     * method used will match the OIDC tenant configuration.
+     * Available methods: BASIC, POST, POST_JWT, QUERY
+     */
+    Optional<String> externalClientAuthMethod();
 }

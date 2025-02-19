@@ -43,6 +43,7 @@ public class OidcProxy {
     final OidcProxyConfig oidcProxyConfig;
     final WebClient client;
     final String configuredClientSecret;
+    final Method authMethod;
 
     public OidcProxy(TenantConfigBean tenantConfig, OidcProxyConfig oidcProxyConfig) {
         TenantConfigContext tenantConfigContext = oidcProxyConfig.tenantId().isEmpty() ? tenantConfig.getDefaultTenant()
@@ -52,6 +53,11 @@ public class OidcProxy {
         this.client = tenantConfigContext.getOidcProviderClient().getWebClient();
         this.oidcProxyConfig = oidcProxyConfig;
         this.configuredClientSecret = OidcCommonUtils.clientSecret(oidcTenantConfig.credentials);
+        if (this.oidcProxyConfig.externalClientAuthMethod().isPresent()) {
+            this.authMethod = Method.valueOf(this.oidcProxyConfig.externalClientAuthMethod().get().toUpperCase());
+        } else {
+            this.authMethod = oidcTenantConfig.credentials.clientSecret.method.orElse(Method.BASIC);
+        }
     }
 
     public void setup(Router router, String httpRootPath) {
@@ -66,7 +72,6 @@ public class OidcProxy {
             throw new ConfigurationException(
                     "OIDC Proxy requires that at least OIDC authorization and token endpoints are configured");
         }
-        Method authMethod = oidcTenantConfig.credentials.clientSecret.method.orElse(Method.BASIC);
         if (authMethod == Method.POST_JWT) {
             throw new ConfigurationException(
                     "Unsupported OIDC service client authentication method");
@@ -146,6 +151,20 @@ public class OidcProxy {
                     .append(prompt);
         }
 
+        // code_challenge
+        final String codeChallenge = queryParams.get(OidcConstants.PKCE_CODE_CHALLENGE);
+        if (codeChallenge != null) {
+            codeFlowParams.append("&").append(OidcConstants.PKCE_CODE_CHALLENGE).append("=")
+                    .append(codeChallenge);
+        }
+
+        // code_challenge_method
+        final String codeChallengeMethod = queryParams.get(OidcConstants.PKCE_CODE_CHALLENGE_METHOD);
+        if (codeChallengeMethod != null) {
+            codeFlowParams.append("&").append(OidcConstants.PKCE_CODE_CHALLENGE_METHOD).append("=")
+                    .append(codeChallengeMethod);
+        }
+
         // redirect_uri
         final String redirectUri = getRedirectUri(context, queryParams.get(OidcConstants.CODE_FLOW_REDIRECT_URI));
         if (redirectUri == null) {
@@ -216,6 +235,12 @@ public class OidcProxy {
                         }
                         encodeForm(buffer, OidcConstants.GRANT_TYPE, grantType);
 
+                        // PKCE code verifier
+                        String pkceCodeVerifier = requestParams.get(OidcConstants.PKCE_CODE_VERIFIER);
+                        if (pkceCodeVerifier != null) {
+                            encodeForm(buffer, OidcConstants.PKCE_CODE_VERIFIER, pkceCodeVerifier);
+                        }
+
                         // client id and secret
                         String clientId = null;
                         String clientSecret = null;
@@ -245,12 +270,12 @@ public class OidcProxy {
                                 return badClientRequest(context);
                             }
                         }
-                        if (configuredClientSecret != null && !configuredClientSecret.equals(clientSecret)) {
+                        if (clientSecret != null && configuredClientSecret != null
+                                && !configuredClientSecret.equals(clientSecret)) {
                             LOG.error("Provided client secret does not match the OIDC service client secret property");
                             return badClientRequest(context);
                         }
-
-                        Method authMethod = oidcTenantConfig.credentials.clientSecret.method.orElse(Method.BASIC);
+                        
                         if (authMethod == Method.BASIC) {
                             String encodedClientIdAndSecret = new String(Base64.getEncoder().encode(
                                     (clientId + ":" + clientSecret).getBytes(StandardCharsets.UTF_8)),
@@ -259,7 +284,9 @@ public class OidcProxy {
                                     "Basic " + encodedClientIdAndSecret);
                         } else if (authMethod == Method.POST) {
                             encodeForm(buffer, OidcConstants.CLIENT_ID, clientId);
-                            encodeForm(buffer, OidcConstants.CLIENT_SECRET, clientSecret);
+                            if (clientSecret != null) {
+                                encodeForm(buffer, OidcConstants.CLIENT_SECRET, clientSecret);
+                            }
                         } else if (authMethod == Method.QUERY) {
                             request.addQueryParam(OidcConstants.CLIENT_ID, OidcCommonUtils.urlEncode(clientId));
                             request.addQueryParam(OidcConstants.CLIENT_SECRET, OidcCommonUtils.urlEncode(clientSecret));
@@ -404,7 +431,7 @@ public class OidcProxy {
     private String getClientId(String providedClientId) {
         if (oidcProxyConfig.externalClientId().isPresent()) {
             if (oidcProxyConfig.externalClientId().get().equals(providedClientId)) {
-                return oidcTenantConfig.clientId.get();
+                return providedClientId;
             } else {
                 LOG.errorf("Provided client id '%s' does not match the external client id '%s' property", providedClientId,
                         oidcProxyConfig.externalClientId().get());
